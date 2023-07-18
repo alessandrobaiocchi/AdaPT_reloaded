@@ -51,7 +51,7 @@ class GSA(nn.Module):
         self.linears = [nn.Linear(self.cg, self.cg) for _ in range(self.groups)]
         self.gn = nn.GroupNorm(self.groups, self.channels)
 
-    def forward(self, x):
+    def forward(self, x, mask=None):
 
         B, N, C = x.shape
 
@@ -63,7 +63,7 @@ class GSA(nn.Module):
         x_g =[]
         for i in range(self.groups):
             x = self.linears[i](xin[:,:,i*self.cg:(i+1)*self.cg]) # B, N, C//groups
-            x = F.scaled_dot_product_attention(x,x,F.elu(x))
+            x = F.scaled_dot_product_attention(x,x,F.elu(x),mask=mask)
             x_g.append(x)
         x = torch.cat(x_g, dim=-1) # B, N, C
 
@@ -155,7 +155,7 @@ class AdaPT(nn.Module):
 
         for i in range(self.n_blocks):
             if i in self.drop_loc:
-                pred_score = self.score_predictor[p](x, prev_decision)#.reshape(B, -1, 2)
+                pred_score = self.score_predictor[p](x, prev_decision)
                 p+=1
                 # Slow warmup
                 keepall = torch.cat((torch.zeros_like(pred_score[:,:,0:1]), torch.ones_like(pred_score[:,:,1:2])),2) 
@@ -164,6 +164,8 @@ class AdaPT(nn.Module):
                     pred_score = torch.log(pred_score + 1e-8)
                     decision = F.gumbel_softmax(pred_score, tau=1.0, hard=True, dim=-1)[:,:,1:2]*prev_decision
                     prev_decision = decision
+                    mask = (decision*decision.transpose(1,2)).bool()
+
 
                 else:
                     score = pred_score[:,:,1]
@@ -171,8 +173,9 @@ class AdaPT(nn.Module):
                     keep_policy = torch.argsort(score, dim=1, descending=True)[:, :num_keep_tokens]
                     x = batch_index_select(x, keep_policy)
                     prev_decision = batch_index_select(prev_decision, keep_policy)
+                    mask = None
 
-            x = self.blocks[i](x)
+            x = self.blocks[i](x, mask=mask)
 
         x = self.classifier(x)
         return x
