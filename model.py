@@ -76,7 +76,7 @@ class TransformerBlock(nn.Module):
   def __init__(self, d_model, n_heads, dropout=0.1):
     super().__init__()
     self.heads = n_heads
-    self.sa = nn.MultiheadAttention(d_model, n_heads, dropout=dropout)
+    self.sa = nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
     self.ln1 = nn.LayerNorm(d_model)
     self.ln2 = nn.LayerNorm(d_model)
     self.ff = nn.Sequential(
@@ -89,7 +89,8 @@ class TransformerBlock(nn.Module):
     
     mask = torch.logical_not(mask).repeat_interleave(self.heads, dim=0) if mask is not None else None
     
-    x = self.sa(self.ln1(x), attn_mask = mask)[0].permute(0,2,1) + x
+    x = self.ln1(x)
+    x = self.sa(x, x, x, attn_mask=mask)[0] + x
     x = self.ff(self.ln2(x)) + x
     return x
 
@@ -249,8 +250,8 @@ class Adapt_classf_pl(pl.LightningModule):
         y_hat, decisions = self.model(x, tau)
         loss = self.loss(y_hat, y)
         for i in range(len(self.drop_target)):
-            loss += self.cfg.train.alpha*(self.drop_target[i] - torch.mean(decisions[i], dim=1)).pow(2).mean()/len(self.drop_target)
-            self.log(f'drop_rate_{i}', 1-(torch.mean(decisions[i], dim=1).mean()), on_epoch=True, on_step=False)
+            loss += self.cfg.train.alpha*(self.drop_target[i] -(1- torch.mean(decisions[i], dim=1))).pow(2).mean()/len(self.drop_target)
+            self.log(f'drop_rate_{i}', 1-(torch.mean(decisions[i])), on_epoch=True, on_step=False)
         pred = torch.argmax(y_hat, dim=1)
         acc = torch.sum(pred == y).float() / float(y.shape[0])
         self.log('train_loss', loss, prog_bar=True)
