@@ -69,7 +69,30 @@ class GSA(nn.Module):
         x = self.gn((channel_shuffle(x, self.groups) + xin).transpose(1,2)).transpose(1,2) # B, N, C
 
         return x
-       
+
+#Tansformer block
+class TransformerBlock(nn.Module):
+  """ A more-or-less standard transformer block. """
+  def __init__(self, d_model, n_heads, dropout=0.1):
+    super().__init__()
+    self.heads = n_heads
+    self.sa = nn.MultiheadAttention(d_model, n_heads, dropout=dropout)
+    self.ln1 = nn.LayerNorm(d_model)
+    self.ln2 = nn.LayerNorm(d_model)
+    self.ff = nn.Sequential(
+        nn.Linear(d_model, d_model*2),
+        nn.GELU(),
+        nn.Linear(d_model*2, d_model)
+    )
+
+  def forward(self, x, mask=None):
+    
+    mask = torch.logical_not(mask).repeat_interleave(self.heads, dim=0) if mask is not None else None
+    
+    x = self.sa(self.ln1(x), attn_mask = mask)[0].permute(0,2,1) + x
+    x = self.ff(self.ln2(x)) + x
+    return x
+
 #GSS: Gumbel Softmax Sampling TODO  
 class GSS(nn.Module):
     def __init__(self, in_ch) -> None:
@@ -142,7 +165,8 @@ class AdaPT(nn.Module):
         self.groups = groups
 
         self.arpe = ARPE(in_channels=3, out_channels=self.embed_dim, npoints=self.n_points)
-        self.blocks = nn.ModuleList([GSA(channels=self.embed_dim, groups=self.groups) for _ in range(self.n_blocks)])
+        #self.blocks = nn.ModuleList([GSA(channels=self.embed_dim, groups=self.groups) for _ in range(self.n_blocks)])
+        self.blocks = nn.ModuleList([TransformerBlock(d_model=self.embed_dim, n_heads=self.groups) for _ in range(self.n_blocks)])
         self.predictors = nn.ModuleList([DropPredictor(self.embed_dim) for _ in range(len(self.drop_loc))])
         
 
@@ -209,7 +233,7 @@ class Adapt_classf_pl(pl.LightningModule):
         self.end = cfg.train.warmup_end
         self.model = Adapt_classf(embed_dim, n_points, n_classes, n_blocks, cfg.model.drop_loc, self.drop_target, groups)
         self.lr = cfg.train.lr
-        self.weight_decay = cfg.weight_decay
+        self.weight_decay = cfg.train.weight_decay
         self.loss = nn.CrossEntropyLoss()
 
     def forward(self, x, drop_temp=1.0):
@@ -225,8 +249,8 @@ class Adapt_classf_pl(pl.LightningModule):
         y_hat, decisions = self.model(x, tau)
         loss = self.loss(y_hat, y)
         for i in range(len(self.drop_target)):
-            loss += self.cfg.train.alpha*(self.drop_target[i] - torch.sum(decisions[i], dim=1)).pow(2).mean()/len(self.drop_target)
-            self.log(f'drop_rate_{i}', torch.sum(decisions[i], dim=1).mean(), on_epoch=True, on_step=False)
+            loss += self.cfg.train.alpha*(self.drop_target[i] - torch.mean(decisions[i], dim=1)).pow(2).mean()/len(self.drop_target)
+            self.log(f'drop_rate_{i}', 1-(torch.mean(decisions[i], dim=1).mean()), on_epoch=True, on_step=False)
         pred = torch.argmax(y_hat, dim=1)
         acc = torch.sum(pred == y).float() / float(y.shape[0])
         self.log('train_loss', loss, prog_bar=True)
@@ -236,7 +260,7 @@ class Adapt_classf_pl(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         x, y = batch
         tau = calc_tau(self.start, self.end, self.current_epoch)
-        y_hat = self.model(x, tau)
+        y_hat, decisions = self.model(x, tau)
         loss = self.loss(y_hat, y)
         pred = torch.argmax(y_hat, dim=1)
         acc = torch.sum(pred == y).float() / float(y.shape[0])

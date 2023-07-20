@@ -22,10 +22,10 @@ model:
 train:
   lr: 0.001
   batch_size: 64
-  epochs: 100
+  epochs: 50
   weight_decay: 0.0001
-  warmup_start: 10
-  warmup_end: 20
+  warmup_start: 15
+  warmup_end: 30
   alpha: 0.01
   
 
