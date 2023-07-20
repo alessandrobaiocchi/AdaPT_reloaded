@@ -1,0 +1,11 @@
+__pycache__/*
+checkpoints/*
+data/*
+PCT_Pytorch/*
+wandb/*
+*.out
+best_models/*
+multirun/*
+outputs/*
+lightning_logs/*
+

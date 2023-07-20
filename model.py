@@ -48,7 +48,7 @@ class GSA(nn.Module):
         self.groups = groups
         assert self.channels % self.groups == 0, "C must be divisible by groups"
         self.cg = self.channels // self.groups
-        self.linears = [nn.Linear(self.cg, self.cg) for _ in range(self.groups)]
+        self.linears = nn.ModuleList([nn.Linear(self.cg, self.cg) for _ in range(self.groups)])
         self.gn = nn.GroupNorm(self.groups, self.channels)
 
     def forward(self, x, mask=None):
@@ -133,6 +133,7 @@ class AdaPT(nn.Module):
     def __init__(self, embed_dim, n_points, n_blocks = 3, drop_loc=[], drop_target=[], groups=1) -> None:
         super().__init__()
 
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.embed_dim = embed_dim
         self.n_points = n_points
         self.n_blocks = n_blocks
@@ -156,7 +157,6 @@ class AdaPT(nn.Module):
         for i in range(self.n_blocks):
             if i in self.drop_loc:
                 pred_score = self.predictors[p](x, prev_decision)
-                p+=1
                 # Slow warmup
                 keepall = torch.cat((torch.zeros_like(pred_score[:,:,0:1]), torch.ones_like(pred_score[:,:,1:2])),2) 
                 pred_score = pred_score*drop_temp + keepall*(1-drop_temp)
@@ -164,15 +164,17 @@ class AdaPT(nn.Module):
                     pred_score = torch.log(pred_score + 1e-8)
                     decision = F.gumbel_softmax(pred_score, tau=1.0, hard=True, dim=-1)[:,:,1:2]*prev_decision
                     prev_decision = decision
-                    mask = (decision*decision.transpose(1,2) - torch.diag_embed(decision.squeeze(-1)) + torch.eye(N).repeat(B,1,1)).bool()
+                    mask = (decision*decision.transpose(1,2) - torch.diag_embed(decision.squeeze(-1)) + torch.eye(N,device=self.device).repeat(B,1,1)).bool()
                     
                 else:
                     score = pred_score[:,:,1]
-                    num_keep_tokens = int((1-self.args.train.drop_ratio[p]) * (N))
+                    num_keep_tokens = int((1-self.drop_target[p]) * (N))
                     keep_policy = torch.argsort(score, dim=1, descending=True)[:, :num_keep_tokens]
                     x = batch_index_select(x, keep_policy)
                     prev_decision = batch_index_select(prev_decision, keep_policy)
                     mask = None
+                    decision = None
+                p += 1
 
             x = self.blocks[i](x, mask=mask)
             
@@ -188,7 +190,10 @@ class Adapt_classf(nn.Module):
 
     def forward(self, x, drop_temp=1.0):
         x, decision = self.adapt(x, drop_temp)
-        x = torch.sum(x * decision, dim=1) / (torch.sum(decision, dim=1) + 1e-20)
+        if decision is not None:
+            x = torch.sum(x * decision, dim=1) / (torch.sum(decision, dim=1) + 1e-20)
+        else:
+            x = torch.mean(x, dim=1)
         x = self.classifier(x)
         return x
 
@@ -210,14 +215,20 @@ class Adapt_classf_pl(pl.LightningModule):
         x, y = batch
         y_hat = self.model(x)
         loss = self.loss(y_hat, y)
-        self.log('train_loss', loss)
+        pred = torch.argmax(y_hat, dim=1)
+        acc = torch.sum(pred == y).float() / float(y.shape[0])
+        self.log('train_loss', loss, prog_bar=True)
+        self.log('train_acc', acc, prog_bar=True,on_step=False, on_epoch=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
         y_hat = self.model(x)
         loss = self.loss(y_hat, y)
-        self.log('val_loss', loss)
+        pred = torch.argmax(y_hat, dim=1)
+        acc = torch.sum(pred == y).float() / float(y.shape[0])
+        self.log('val_loss', loss, prog_bar=True)
+        self.log('val_acc', acc, prog_bar=True,on_step=False, on_epoch=True)
         return loss
 
     def configure_optimizers(self):
