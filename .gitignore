@@ -8,4 +8,5 @@ best_models/*
 multirun/*
 outputs/*
 lightning_logs/*
-
+datasets/__pycache__/*
+Adapt_reloaded/*

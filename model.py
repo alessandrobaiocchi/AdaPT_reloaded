@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops.layers.torch import Reduce
 from pytorch3d.ops import knn_points
-from util import batch_index_select, channel_shuffle
+from util import batch_index_select, channel_shuffle, calc_tau
 import pytorch_lightning as pl
 
 #ARPE: Absolute Relative Position Encoding
@@ -153,7 +153,7 @@ class AdaPT(nn.Module):
         prev_decision = torch.ones(B, N, 1, dtype=x.dtype, device=x.device)
         mask = None
         p = 0
-
+        decisions = []
         for i in range(self.n_blocks):
             if i in self.drop_loc:
                 pred_score = self.predictors[p](x, prev_decision)
@@ -165,7 +165,7 @@ class AdaPT(nn.Module):
                     decision = F.gumbel_softmax(pred_score, tau=1.0, hard=True, dim=-1)[:,:,1:2]*prev_decision
                     prev_decision = decision
                     mask = (decision*decision.transpose(1,2) - torch.diag_embed(decision.squeeze(-1)) + torch.eye(N,device=self.device).repeat(B,1,1)).bool()
-                    
+                    decisions.append(decision)
                 else:
                     score = pred_score[:,:,1]
                     num_keep_tokens = int((1-self.drop_target[p]) * (N))
@@ -173,12 +173,12 @@ class AdaPT(nn.Module):
                     x = batch_index_select(x, keep_policy)
                     prev_decision = batch_index_select(prev_decision, keep_policy)
                     mask = None
-                    decision = None
+                    decisions = None
                 p += 1
 
             x = self.blocks[i](x, mask=mask)
             
-        return x, decision
+        return x, decisions
     
 #Classifier model
 class Adapt_classf(nn.Module):
@@ -189,32 +189,44 @@ class Adapt_classf(nn.Module):
         self.adapt = AdaPT(embed_dim, n_points, n_blocks, drop_loc, drop_target, groups)
 
     def forward(self, x, drop_temp=1.0):
-        x, decision = self.adapt(x, drop_temp)
-        if decision is not None:
-            x = torch.sum(x * decision, dim=1) / (torch.sum(decision, dim=1) + 1e-20)
+        x, decisions = self.adapt(x, drop_temp)
+        if decisions is not None:
+            x = torch.sum(x * decisions[-1], dim=1) / (torch.sum(decisions[-1], dim=1) + 1e-20)
         else:
             x = torch.mean(x, dim=1)
         x = self.classifier(x)
-        return x
+        return x, decisions
 
 #Pytorch_lightning wrapper
 class Adapt_classf_pl(pl.LightningModule):
-    def __init__(self, embed_dim, n_points, n_classes, n_blocks = 3, drop_loc=[], drop_target=[], groups=1, lr=1e-3, weight_decay=1e-4):
+    def __init__(self, cfg, embed_dim, n_points, n_classes, n_blocks = 3, groups=1):
         super().__init__() 
 
+        self.cfg = cfg
         self.save_hyperparameters()
-        self.model = Adapt_classf(embed_dim, n_points, n_classes, n_blocks, drop_loc, drop_target, groups)
-        self.lr = lr
-        self.weight_decay = weight_decay
+        self.drop_target = cfg.model.drop_rate
+        self.start = cfg.train.warmup_start
+        self.end = cfg.train.warmup_end
+        self.model = Adapt_classf(embed_dim, n_points, n_classes, n_blocks, cfg.model.drop_loc, self.drop_target, groups)
+        self.lr = cfg.train.lr
+        self.weight_decay = cfg.weight_decay
         self.loss = nn.CrossEntropyLoss()
 
     def forward(self, x, drop_temp=1.0):
-        return self.model(x, drop_temp)
+        y, decisions = self.model(x, drop_temp)
+        if decisions is not None:
+            return y, decisions
+        else:
+            return y
 
     def training_step(self, batch, batch_idx):
         x, y = batch
-        y_hat = self.model(x)
+        tau = calc_tau(self.start, self.end, self.current_epoch)
+        y_hat, decisions = self.model(x, tau)
         loss = self.loss(y_hat, y)
+        for i in range(len(self.drop_target)):
+            loss += self.cfg.train.alpha*(self.drop_target[i] - torch.sum(decisions[i], dim=1)).pow(2).mean()/len(self.drop_target)
+            self.log(f'drop_rate_{i}', torch.sum(decisions[i], dim=1).mean(), on_epoch=True, on_step=False)
         pred = torch.argmax(y_hat, dim=1)
         acc = torch.sum(pred == y).float() / float(y.shape[0])
         self.log('train_loss', loss, prog_bar=True)
@@ -223,7 +235,8 @@ class Adapt_classf_pl(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
-        y_hat = self.model(x)
+        tau = calc_tau(self.start, self.end, self.current_epoch)
+        y_hat = self.model(x, tau)
         loss = self.loss(y_hat, y)
         pred = torch.argmax(y_hat, dim=1)
         acc = torch.sum(pred == y).float() / float(y.shape[0])

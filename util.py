@@ -24,6 +24,13 @@ def channel_shuffle(x, groups):
     return x
 
 
-
+def calc_tau(start, end, epoch):
+    if epoch<start:
+        tau = 0
+    elif epoch>end:
+        tau = 1
+    else:
+        tau = (epoch-start)/(end-start)
+    return tau
 
 
