@@ -41,6 +41,8 @@ def visualize(cfg):
 
 @hydra.main(config_path=".", config_name="config", version_base=None)
 def main(cfg: DictConfig):
+
+    torch.set_float32_matmul_precision('high')
     pl.seed_everything(cfg.experiment.seed)
     if cfg.wandb:
         wandb.login()
