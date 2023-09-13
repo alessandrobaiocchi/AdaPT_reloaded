@@ -5,7 +5,7 @@ from einops.layers.torch import Reduce
 from pytorch3d.ops import knn_points
 from util import batch_index_select, channel_shuffle, calc_tau
 import pytorch_lightning as pl
-from entmax import sparsemax
+from entmax import sparsemax, entmax15, entmax_bisect
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 #ARPE: Absolute Relative Position Encoding
@@ -156,7 +156,7 @@ class Classf_head(nn.Module):
 
 #Transformer model
 class AdaPT(nn.Module):
-    def __init__(self, embed_dim, n_points, n_blocks = 3, drop_loc=[], drop_target=[], groups=1, sampling_met= None) -> None:
+    def __init__(self, embed_dim, n_points, n_blocks = 3, drop_loc=[], drop_target=[], groups=1, sampling_met= None, entmax_alpha=None) -> None:
         super().__init__()
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -165,8 +165,9 @@ class AdaPT(nn.Module):
         self.n_blocks = n_blocks
         self.drop_loc = drop_loc
         self.drop_target = drop_target
-        self.groups = groups
+        self.groups = groups    
         self.sampling_met = sampling_met
+        self.entmax_alpha = entmax_alpha
 
         self.arpe = ARPE(in_channels=3, out_channels=self.embed_dim, npoints=self.n_points)
         self.blocks = nn.ModuleList([GSA(channels=self.embed_dim, groups=self.groups) for _ in range(self.n_blocks)])
@@ -193,15 +194,19 @@ class AdaPT(nn.Module):
                     if self.sampling_met == 'gumbel':
                         decision = F.gumbel_softmax(pred_score, tau=1.0, hard=True, dim=-1)[:,:,1:2]*prev_decision
                     elif self.sampling_met == 'sparsemax':
-                        print('Sampling method not implemented yet')
-                        raise NotImplementedError
+                        decision = sparsemax(pred_score, dim=1)[:,:,1:2]*prev_decision
+                    elif self.sampling_met == 'entmax15':
+                        decision = entmax15(pred_score, dim=1)[:,:,1:2]*prev_decision
+                    elif self.sampling_met == 'entmax_bisect' and self.entmax_alpha is not None:
+                        decision = entmax_bisect(pred_score, alpha=self.entmax_alpha, dim=1)[:,:,1:2]*prev_decision
                     elif self.sampling_met == None:
                         decision = prev_decision
                     else:
-                        print('Sampling method not implemented')
+                        print('Sampling method not implemented or alpha not provided for entmax_bisect')
                         raise NotImplementedError
+                    decision[decision>0] = 1
                     prev_decision = decision
-                    mask = (decision*decision.transpose(1,2) - torch.diag_embed(decision.squeeze(-1)) + torch.eye(N,device=self.device).repeat(B,1,1)).bool()
+                    mask = (decision*decision.transpose(1,2) + torch.eye(N,device=self.device).repeat(B,1,1)).bool()
                     decisions.append(decision)
                 else:
                     score = pred_score[:,:,1]
@@ -219,15 +224,16 @@ class AdaPT(nn.Module):
     
 #Classifier model
 class Adapt_classf(nn.Module):
-    def __init__(self,embed_dim, n_points, n_classes, n_blocks = 3, drop_loc=[], drop_target=[], groups=1, sampling_met=None):
+    def __init__(self,embed_dim, n_points, n_classes, n_blocks = 3, drop_loc=[], drop_target=[], groups=1, sampling_met=None, entmax_alpha=None):
         super().__init__() 
 
         self.classifier = Classf_head(embed_dim, n_classes)
-        self.adapt = AdaPT(embed_dim, n_points, n_blocks, drop_loc, drop_target, groups, sampling_met)
+        self.adapt = AdaPT(embed_dim, n_points, n_blocks, drop_loc, drop_target, groups, sampling_met, entmax_alpha)
 
     def forward(self, x, drop_temp=1.0):
         x, decisions = self.adapt(x, drop_temp)
         if decisions is not None and len(decisions) > 0:
+            #print(decisions[-1])
             x = torch.sum(x * decisions[-1], dim=1) / (torch.sum(decisions[-1], dim=1) + 1e-20)
         else:
             x = torch.mean(x, dim=1)
@@ -244,7 +250,7 @@ class Adapt_classf_pl(pl.LightningModule):
         self.drop_target = cfg.model.drop_rate
         self.start = cfg.train.warmup_start
         self.end = cfg.train.warmup_end
-        self.model = Adapt_classf(embed_dim, n_points, n_classes, n_blocks, cfg.model.drop_loc, self.drop_target, groups=groups, sampling_met=cfg.model.sampling_met)
+        self.model = Adapt_classf(embed_dim, n_points, n_classes, n_blocks, cfg.model.drop_loc, self.drop_target, groups=groups, sampling_met=cfg.model.sampling_met, entmax_alpha=cfg.model.entmax_alpha)
         self.lr = cfg.train.lr
         self.weight_decay = cfg.train.weight_decay
         self.loss = nn.CrossEntropyLoss()
