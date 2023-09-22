@@ -111,11 +111,11 @@ class GSS(nn.Module):
 class DropPredictor(nn.Module):
     """ Computes the log-probabilities of dropping a token, adapted from PredictorLG here:
     https://github.com/raoyongming/DynamicViT/blob/48ac52643a637ed5a4cf7c7d429dcf17243794cd/models/dyvit.py#L287 """
-    def __init__(self, embed_dim):
+    def __init__(self, embed_dim, budget_dim=32):
         super().__init__()
         self.in_conv = nn.Sequential(
-            nn.LayerNorm(embed_dim),
-            nn.Linear(embed_dim, embed_dim),
+            nn.LayerNorm(embed_dim+budget_dim),
+            nn.Linear(embed_dim+budget_dim, embed_dim),
             nn.GELU()
         )
 
@@ -156,7 +156,7 @@ class Classf_head(nn.Module):
 
 #Transformer model
 class AdaPT(nn.Module):
-    def __init__(self, embed_dim, n_points, n_blocks = 3, drop_loc=[], drop_target=[], groups=1, sampling_met= None, entmax_alpha=None) -> None:
+    def __init__(self, embed_dim, n_points, n_blocks = 3, drop_loc=[], drop_targets=[], groups=1, sampling_met= None, entmax_alpha=None) -> None:
         super().__init__()
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -164,18 +164,24 @@ class AdaPT(nn.Module):
         self.n_points = n_points
         self.n_blocks = n_blocks
         self.drop_loc = drop_loc
-        self.drop_target = drop_target
+        self.drop_targets = torch.tensor(drop_targets)
         self.groups = groups    
         self.sampling_met = sampling_met
         self.entmax_alpha = entmax_alpha
+        
 
+        #budget tokens to be appended to the tokens in the drop module
+        self.budget_tokens = [nn.Parameter(torch.randn(1, 1, 32)).to(self.device) for _ in range(4)]
         self.arpe = ARPE(in_channels=3, out_channels=self.embed_dim, npoints=self.n_points)
         self.blocks = nn.ModuleList([GSA(channels=self.embed_dim, groups=self.groups) for _ in range(self.n_blocks)])
         #self.blocks = nn.ModuleList([TransformerBlock(d_model=self.embed_dim, n_heads=self.groups) for _ in range(self.n_blocks)])
         self.predictors = nn.ModuleList([DropPredictor(self.embed_dim) for _ in range(len(self.drop_loc))])
         
 
-    def forward(self, x, drop_temp=1.0):
+    def forward(self, x, drop_temp=1.0, budg = 0):
+
+        drop_target = self.drop_targets*(0.3333*budg)
+        budget_token = self.budget_tokens[budg]
 
         B, N, C = x.shape
         x = self.arpe(x)
@@ -185,7 +191,10 @@ class AdaPT(nn.Module):
         decisions = []
         for i in range(self.n_blocks):
             if i in self.drop_loc:
-                pred_score = self.predictors[p](x, prev_decision)
+                
+                B, N, C = x.shape
+                x_for_pred = torch.cat((x, budget_token.repeat(B, N, 1)), dim=2)
+                pred_score = self.predictors[p](x_for_pred, prev_decision)
                 # Slow warmup
                 keepall = torch.cat((torch.zeros_like(pred_score[:,:,0:1]), torch.ones_like(pred_score[:,:,1:2])),2) 
                 pred_score = pred_score*drop_temp + keepall*(1-drop_temp)
@@ -204,20 +213,19 @@ class AdaPT(nn.Module):
                     else:
                         print('Sampling method not implemented or alpha not provided for entmax_bisect')
                         raise NotImplementedError
-                    decision[decision>0] = 1
+                    #decision[decision>0] = 1  #needed for entmax?
                     prev_decision = decision
                     mask = (decision*decision.transpose(1,2) + torch.eye(N,device=self.device).repeat(B,1,1)).bool()
                     decisions.append(decision)
                 else:
                     score = pred_score[:,:,1]
-                    num_keep_tokens = int((1-self.drop_target[p]) * (N))
+                    num_keep_tokens = int((1-drop_target[p]) * (N))
                     keep_policy = torch.argsort(score, dim=1, descending=True)[:, :num_keep_tokens]
                     x = batch_index_select(x, keep_policy)
                     prev_decision = batch_index_select(prev_decision, keep_policy)
                     mask = None
                     decisions = None
                 p += 1
-
             x = self.blocks[i](x, mask=mask)
             
         return x, decisions
@@ -230,8 +238,8 @@ class Adapt_classf(nn.Module):
         self.classifier = Classf_head(embed_dim, n_classes)
         self.adapt = AdaPT(embed_dim, n_points, n_blocks, drop_loc, drop_target, groups, sampling_met, entmax_alpha)
 
-    def forward(self, x, drop_temp=1.0):
-        x, decisions = self.adapt(x, drop_temp)
+    def forward(self, x, drop_temp=1.0, budg=0):
+        x, decisions = self.adapt(x, drop_temp, budg)
         if decisions is not None and len(decisions) > 0:
             #print(decisions[-1])
             x = torch.sum(x * decisions[-1], dim=1) / (torch.sum(decisions[-1], dim=1) + 1e-20)
@@ -247,7 +255,7 @@ class Adapt_classf_pl(pl.LightningModule):
 
         self.cfg = cfg
         self.save_hyperparameters()
-        self.drop_target = cfg.model.drop_rate
+        self.drop_target = torch.tensor(cfg.model.drop_rate)
         self.start = cfg.train.warmup_start
         self.end = cfg.train.warmup_end
         self.model = Adapt_classf(embed_dim, n_points, n_classes, n_blocks, cfg.model.drop_loc, self.drop_target, groups=groups, sampling_met=cfg.model.sampling_met, entmax_alpha=cfg.model.entmax_alpha)
@@ -255,8 +263,8 @@ class Adapt_classf_pl(pl.LightningModule):
         self.weight_decay = cfg.train.weight_decay
         self.loss = nn.CrossEntropyLoss()
 
-    def forward(self, x, drop_temp=1.0):
-        y, decisions = self.model(x, drop_temp)
+    def forward(self, x, drop_temp=1.0, budg=0):
+        y, decisions = self.model(x, drop_temp, budg)
         if decisions is not None:
             return y, decisions
         else:
@@ -265,13 +273,16 @@ class Adapt_classf_pl(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         x, y = batch
         tau = calc_tau(self.start, self.end, self.current_epoch)
-        y_hat, decisions = self.model(x, tau)
+        budg = torch.randint(4, size=(1,))
+        y_hat, decisions = self.model(x, tau, budg)
         loss = self.loss(y_hat, y)
+        drop_target = self.drop_target*(0.3333*budg)
         for i in range(len(self.drop_target)):
-            loss += self.cfg.train.alpha*(self.drop_target[i] -(1- torch.mean(decisions[i], dim=1))).pow(2).mean()/len(self.drop_target)
-            self.log(f'drop_rate_{i}', 1-(torch.mean(decisions[i])), on_epoch=True, on_step=False)
+            loss += self.cfg.train.alpha*(drop_target[i] -(1- torch.mean(decisions[i], dim=1))).pow(2).mean()/len(self.drop_target)
+            self.log(f'drop_rate_{i}_budget{budg.item()}', 1-(torch.mean(decisions[i])), on_epoch=True, on_step=False)
         pred = torch.argmax(y_hat, dim=1)
         acc = torch.sum(pred == y).float() / float(y.shape[0])
+        self.log('budg', budg.float(), on_epoch=True, on_step=True)
         self.log('train_loss', loss, prog_bar=True)
         self.log('train_acc', acc, prog_bar=True,on_step=False, on_epoch=True)
         return loss
@@ -279,10 +290,12 @@ class Adapt_classf_pl(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         x, y = batch
         tau = calc_tau(self.start, self.end, self.current_epoch)
-        y_hat, decisions = self.model(x, tau)
+        budg = torch.randint(4, size=(1,))
+        y_hat, decisions = self.model(x, tau, budg)
         loss = self.loss(y_hat, y)
         pred = torch.argmax(y_hat, dim=1)
         acc = torch.sum(pred == y).float() / float(y.shape[0])
+        self.log('budg', budg.float(), on_epoch=True, on_step=True)
         self.log('val_loss', loss, prog_bar=True)
         self.log('val_acc', acc, prog_bar=True,on_step=False, on_epoch=True)
         return loss

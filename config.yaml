@@ -18,16 +18,17 @@ model:
   drop_loc: [1,2,3,4]
   drop_rate: [0.2,0.4,0.6,0.8]
   groups: 4
-  sampling_met: "sparsemax"
+  sampling_met: "gumbel"
   entmax_alpha: 
+
 
 train:
   lr: 0.001
   batch_size: 32
-  epochs: 200
+  epochs: 100
   weight_decay: 0.0001
   warmup_start: 20
   warmup_end: 40
-  alpha: 0.01
-  
+  alpha: 100
+  n_budgets: 4
 
