@@ -156,22 +156,27 @@ class Classf_head(nn.Module):
 
 #Transformer model
 class AdaPT(nn.Module):
-    def __init__(self, embed_dim, n_points, n_blocks = 3, drop_loc=[], drop_targets=[], groups=1, sampling_met= None, entmax_alpha=None) -> None:
+    def __init__(self, cfg, embed_dim, n_points, n_blocks = 3, groups=1) -> None:
         super().__init__()
 
+        self.cfg = cfg
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.embed_dim = embed_dim
         self.n_points = n_points
         self.n_blocks = n_blocks
-        self.drop_loc = drop_loc
-        self.drop_targets = torch.tensor(drop_targets)
         self.groups = groups    
-        self.sampling_met = sampling_met
-        self.entmax_alpha = entmax_alpha
+        self.drop_loc = cfg.model.drop_loc 
+        self.drop_target =  torch.tensor(cfg.model.drop_rate)
+        self.sampling_met= cfg.model.sampling_met
+        self.entmax_alpha= cfg.model.entmax_alpha
+        self.n_budgets = cfg.train.n_budgets
         
 
         #budget tokens to be appended to the tokens in the drop module
-        self.budget_tokens = [nn.Parameter(torch.randn(1, 1, 32)).to(self.device) for _ in range(4)]
+        #self.budget_tokens = [nn.Parameter(torch.randn(1, 1, 32)).to(self.device) for _ in range(4)]
+        self.zero_drop_budget = nn.Parameter(torch.zeros(1, 1, 32)).to(self.device)
+        self.full_drop_budget = nn.Parameter(torch.ones(1, 1, 32)).to(self.device)
+        
         self.arpe = ARPE(in_channels=3, out_channels=self.embed_dim, npoints=self.n_points)
         self.blocks = nn.ModuleList([GSA(channels=self.embed_dim, groups=self.groups) for _ in range(self.n_blocks)])
         #self.blocks = nn.ModuleList([TransformerBlock(d_model=self.embed_dim, n_heads=self.groups) for _ in range(self.n_blocks)])
@@ -180,9 +185,11 @@ class AdaPT(nn.Module):
 
     def forward(self, x, drop_temp=1.0, budg = 0):
 
-        drop_target = self.drop_targets*(0.3333*budg)
-        budget_token = self.budget_tokens[budg]
-
+        
+        drop_target = self.drop_targets*(budg/(self.n_budgets-1))
+        #budget_token = self.budget_tokens[budg]
+        budget_token = self.zero_drop_budget*(self.n_budgets-budg-1)/(self.n_budgets-1) + self.full_drop_budget*budg/(self.n_budgets-1)
+        
         B, N, C = x.shape
         x = self.arpe(x)
         prev_decision = torch.ones(B, N, 1, dtype=x.dtype, device=x.device)
@@ -232,11 +239,13 @@ class AdaPT(nn.Module):
     
 #Classifier model
 class Adapt_classf(nn.Module):
-    def __init__(self,embed_dim, n_points, n_classes, n_blocks = 3, drop_loc=[], drop_target=[], groups=1, sampling_met=None, entmax_alpha=None):
+    def __init__(self, cfg, embed_dim, n_points, n_classes, n_blocks = 3, groups=1):
         super().__init__() 
 
+        self.cfg = cfg
+
         self.classifier = Classf_head(embed_dim, n_classes)
-        self.adapt = AdaPT(embed_dim, n_points, n_blocks, drop_loc, drop_target, groups, sampling_met, entmax_alpha)
+        self.adapt = AdaPT(cfg, embed_dim, n_points, n_blocks, drop_loc, drop_target, groups, sampling_met, entmax_alpha)
 
     def forward(self, x, drop_temp=1.0, budg=0):
         x, decisions = self.adapt(x, drop_temp, budg)
@@ -258,10 +267,11 @@ class Adapt_classf_pl(pl.LightningModule):
         self.drop_target = torch.tensor(cfg.model.drop_rate)
         self.start = cfg.train.warmup_start
         self.end = cfg.train.warmup_end
-        self.model = Adapt_classf(embed_dim, n_points, n_classes, n_blocks, cfg.model.drop_loc, self.drop_target, groups=groups, sampling_met=cfg.model.sampling_met, entmax_alpha=cfg.model.entmax_alpha)
+        self.model = Adapt_classf(embed_dim, n_points, n_classes, n_blocks, groups=groups)
         self.lr = cfg.train.lr
         self.weight_decay = cfg.train.weight_decay
         self.loss = nn.CrossEntropyLoss()
+        self.n_budgets = cfg.train.n_budgets
 
     def forward(self, x, drop_temp=1.0, budg=0):
         y, decisions = self.model(x, drop_temp, budg)
@@ -273,10 +283,10 @@ class Adapt_classf_pl(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         x, y = batch
         tau = calc_tau(self.start, self.end, self.current_epoch)
-        budg = torch.randint(4, size=(1,))
+        budg = torch.randint(self.n_budgets, size=(1,))
         y_hat, decisions = self.model(x, tau, budg)
         loss = self.loss(y_hat, y)
-        drop_target = self.drop_target*(0.3333*budg)
+        drop_target = self.drop_target*(budg/(self.n_budgets-1))
         for i in range(len(self.drop_target)):
             loss += self.cfg.train.alpha*(drop_target[i] -(1- torch.mean(decisions[i], dim=1))).pow(2).mean()/len(self.drop_target)
             self.log(f'drop_rate_{i}_budget{budg.item()}', 1-(torch.mean(decisions[i])), on_epoch=True, on_step=False)
