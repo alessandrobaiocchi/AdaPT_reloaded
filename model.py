@@ -166,17 +166,17 @@ class AdaPT(nn.Module):
         self.n_blocks = n_blocks
         self.groups = groups    
         self.drop_loc = cfg.model.drop_loc 
-        self.drop_target =  torch.tensor(cfg.model.drop_rate)
+        self.drop_target =  torch.tensor(cfg.model.drop_rate, device=self.device)
         self.sampling_met= cfg.model.sampling_met
         self.entmax_alpha= cfg.model.entmax_alpha
-        self.n_budgets = cfg.train.n_budgets
+        self.n_budgets = torch.tensor(cfg.train.n_budgets, device=self.device)
         
 
         #budget tokens to be appended to the tokens in the drop module
         #self.budget_tokens = [nn.Parameter(torch.randn(1, 1, 32)).to(self.device) for _ in range(4)]
         self.zero_drop_budget = nn.Parameter(torch.zeros(1, 1, 32)).to(self.device)
         self.full_drop_budget = nn.Parameter(torch.ones(1, 1, 32)).to(self.device)
-        
+
         self.arpe = ARPE(in_channels=3, out_channels=self.embed_dim, npoints=self.n_points)
         self.blocks = nn.ModuleList([GSA(channels=self.embed_dim, groups=self.groups) for _ in range(self.n_blocks)])
         #self.blocks = nn.ModuleList([TransformerBlock(d_model=self.embed_dim, n_heads=self.groups) for _ in range(self.n_blocks)])
@@ -185,8 +185,8 @@ class AdaPT(nn.Module):
 
     def forward(self, x, drop_temp=1.0, budg = 0):
 
-        
-        drop_target = self.drop_targets*(budg/(self.n_budgets-1))
+        budg = torch.tensor(budg, device=self.device)
+        drop_target = self.drop_target*(budg/(self.n_budgets-1))
         #budget_token = self.budget_tokens[budg]
         budget_token = self.zero_drop_budget*(self.n_budgets-budg-1)/(self.n_budgets-1) + self.full_drop_budget*budg/(self.n_budgets-1)
         
@@ -245,7 +245,7 @@ class Adapt_classf(nn.Module):
         self.cfg = cfg
 
         self.classifier = Classf_head(embed_dim, n_classes)
-        self.adapt = AdaPT(cfg, embed_dim, n_points, n_blocks, drop_loc, drop_target, groups, sampling_met, entmax_alpha)
+        self.adapt = AdaPT(cfg, embed_dim, n_points, n_blocks, groups)
 
     def forward(self, x, drop_temp=1.0, budg=0):
         x, decisions = self.adapt(x, drop_temp, budg)
@@ -267,7 +267,7 @@ class Adapt_classf_pl(pl.LightningModule):
         self.drop_target = torch.tensor(cfg.model.drop_rate)
         self.start = cfg.train.warmup_start
         self.end = cfg.train.warmup_end
-        self.model = Adapt_classf(embed_dim, n_points, n_classes, n_blocks, groups=groups)
+        self.model = Adapt_classf(cfg, embed_dim, n_points, n_classes, n_blocks, groups=groups)
         self.lr = cfg.train.lr
         self.weight_decay = cfg.train.weight_decay
         self.loss = nn.CrossEntropyLoss()
