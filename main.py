@@ -29,7 +29,31 @@ def train(cfg, train_loader, test_loader):
     trainer = pl.Trainer(profiler="simple",max_epochs=cfg.train.epochs, accelerator=device, logger=[wandb_logger] if cfg.wandb else None, devices=1, gradient_clip_val=2)
     trainer.fit(model, train_loader, test_loader)
 
+    with torch.no_grad():
+        data, label = next(iter(test_loader))
+        decisions = []
+        model = model.to(device)
+        data = data.to(device)
+        for budg in range(cfg.train.n_budgets):
+            _, decision = model(data, budg=budg)
+            decisions.append(decision[-1].reshape(-1).cpu())
+        
+        print(decisions[0].shape)
+        decisions = torch.stack(decisions, dim=0).sum(dim=0)
+        print(decisions.shape)
+        optimal_histo = torch.zeros_like(decisions)
+        targets = cfg.model.drop_rate[-1]*(torch.arange(cfg.train.n_budgets)/(cfg.train.n_budgets-1))
+        for targ in targets:
+            optimal_histo[:int(targ*len(optimal_histo))] += 1
+        print(targets)
+        print(decisions)
+        print(optimal_histo)
+        if cfg.wandb:
+            wandb.log({"optimal_histo": wandb.Histogram(optimal_histo)})
+            wandb.log({"decisions": wandb.Histogram(decisions)})
 
+    if cfg.wandb:
+        wandb.finish()
 
     return None
 
