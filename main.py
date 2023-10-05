@@ -7,6 +7,9 @@ from pytorch_lightning.loggers import WandbLogger
 from datasets.ModelNet40Ply2048 import ModelNet40Ply2048DataModule
 from model import Adapt_classf_pl
 import os
+import numpy as np
+import random
+import matplotlib.pyplot as plt
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"] = "1"
@@ -41,16 +44,27 @@ def train(cfg, train_loader, test_loader):
         print(decisions[0].shape)
         decisions = torch.stack(decisions, dim=0).sum(dim=0)
         print(decisions.shape)
-        optimal_histo = torch.zeros_like(decisions)
+        optimal = torch.zeros_like(decisions)
         targets = cfg.model.drop_rate[-1]*(torch.arange(cfg.train.n_budgets)/(cfg.train.n_budgets-1))
+        random_decision = torch.zeros_like(decisions)
         for targ in targets:
-            optimal_histo[:int(targ*len(optimal_histo))] += 1
+            optimal[:int(targ*len(optimal))] += 1
+            ind = random.sample(range(len(optimal)), int(targ*len(optimal)))
+            random_decision[ind] += 1
+
         print(targets)
         print(decisions)
-        print(optimal_histo)
-        if cfg.wandb:
-            wandb.log({"optimal_histo": wandb.Histogram(optimal_histo)})
-            wandb.log({"decisions": wandb.Histogram(decisions)})
+        print(optimal)
+        optimal = optimal.cpu().numpy()
+        decisions = decisions.cpu().numpy()
+        optimal_histo = np.histogram(optimal, bins=range(cfg.train.n_budgets+1))
+        decision_histo = np.histogram(decisions, bins=range(cfg.train.n_budgets+1))
+        random_decision_histo = np.histogram(random_decision, bins=range(cfg.train.n_budgets+1))
+
+        fig = plt.figure()
+        plt.hist([optimal, decisions, random_decision], alpha=0.5, bins=range(cfg.train.n_budgets+1), label=["optimal", "decision", "random_decision"])
+        plt.legend(loc='upper right')
+        plt.savefig("histo.png")
 
     if cfg.wandb:
         wandb.finish()

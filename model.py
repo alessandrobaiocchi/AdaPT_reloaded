@@ -180,7 +180,7 @@ class AdaPT(nn.Module):
         self.arpe = ARPE(in_channels=3, out_channels=self.embed_dim, npoints=self.n_points)
         self.blocks = nn.ModuleList([GSA(channels=self.embed_dim, groups=self.groups) for _ in range(self.n_blocks)])
         #self.blocks = nn.ModuleList([TransformerBlock(d_model=self.embed_dim, n_heads=self.groups) for _ in range(self.n_blocks)])
-        self.predictors = nn.ModuleList([nn.ModuleList([DropPredictor(self.embed_dim) for _ in range(len(self.drop_loc))]) for _ in range(self.n_budgets)])
+        self.all_predictors = nn.ModuleList([nn.ModuleList([DropPredictor(self.embed_dim, budget_dim=0) for _ in range(len(self.drop_loc))]) for _ in range(self.n_budgets)])
         
 
     def forward(self, x, drop_temp=1.0, budg = 0):
@@ -189,7 +189,7 @@ class AdaPT(nn.Module):
         drop_target = self.drop_target*(budg/(self.n_budgets-1))
         #budget_token = self.budget_tokens[budg]
         budget_token = self.zero_drop_budget*(self.n_budgets-budg-1)/(self.n_budgets-1) + self.full_drop_budget*budg/(self.n_budgets-1)
-        predictors = self.predictors[budg]
+        predictors = self.all_predictors[budg]
 
         B, N, C = x.shape
         x = self.arpe(x)
@@ -202,7 +202,8 @@ class AdaPT(nn.Module):
                 
                 B, N, C = x.shape
                 x_for_pred = torch.cat((x, budget_token.repeat(B, N, 1)), dim=2)
-                pred_score = predictors[p](x_for_pred, prev_decision)
+                #pred_score = predictors[p](x_for_pred, prev_decision)
+                pred_score = predictors[p](x, prev_decision)
                 # Slow warmup
                 keepall = torch.cat((torch.zeros_like(pred_score[:,:,0:1]), torch.ones_like(pred_score[:,:,1:2])),2) 
                 pred_score = pred_score*drop_temp + keepall*(1-drop_temp)
