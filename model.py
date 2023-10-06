@@ -178,8 +178,8 @@ class AdaPT(nn.Module):
         self.full_drop_budget = nn.Parameter(torch.ones(1, 1, 32)).to(self.device)
 
         self.arpe = ARPE(in_channels=3, out_channels=self.embed_dim, npoints=self.n_points)
-        self.blocks = nn.ModuleList([GSA(channels=self.embed_dim, groups=self.groups) for _ in range(self.n_blocks)])
-        #self.blocks = nn.ModuleList([TransformerBlock(d_model=self.embed_dim, n_heads=self.groups) for _ in range(self.n_blocks)])
+        #self.blocks = nn.ModuleList([GSA(channels=self.embed_dim, groups=self.groups) for _ in range(self.n_blocks)])
+        self.blocks = nn.ModuleList([TransformerBlock(d_model=self.embed_dim, n_heads=self.groups) for _ in range(self.n_blocks)])
         self.all_predictors = nn.ModuleList([nn.ModuleList([DropPredictor(self.embed_dim, budget_dim=0) for _ in range(len(self.drop_loc))]) for _ in range(self.n_budgets)])
         
 

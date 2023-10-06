@@ -12,7 +12,7 @@ import random
 import matplotlib.pyplot as plt
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 os.environ["WANDB_API_KEY"] = "04a5d6fba030b76e5b620f5bd6509cf7dffebb8b"
 
 def train(cfg, train_loader, test_loader):
@@ -57,12 +57,12 @@ def train(cfg, train_loader, test_loader):
         print(optimal)
         optimal = optimal.cpu().numpy()
         decisions = decisions.cpu().numpy()
-        optimal_histo = np.histogram(optimal, bins=range(cfg.train.n_budgets+1))
-        decision_histo = np.histogram(decisions, bins=range(cfg.train.n_budgets+1))
-        random_decision_histo = np.histogram(random_decision, bins=range(cfg.train.n_budgets+1))
+        optimal_histo = np.histogram(optimal, bins=cfg.train.n_budgets+1)
+        decision_histo = np.histogram(decisions, bins=cfg.train.n_budgets+1)
+        random_decision_histo = np.histogram(random_decision, bins=cfg.train.n_budgets+1)
 
         fig = plt.figure()
-        plt.hist([optimal, decisions, random_decision], alpha=0.5, bins=range(cfg.train.n_budgets+1), label=["optimal", "decision", "random_decision"])
+        plt.hist([optimal, decisions, random_decision], alpha=0.5, bins=cfg.train.n_budgets+1, label=["optimal", "decision", "random_decision"])
         plt.legend(loc='upper right')
         plt.savefig("histo.png")
 
