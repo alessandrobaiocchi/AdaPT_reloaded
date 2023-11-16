@@ -5,21 +5,25 @@ import wandb
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 from datasets.ModelNet40Ply2048 import ModelNet40Ply2048DataModule
-from model import Adapt_classf_pl
+#from model import Adapt_classf_pl
 import os
 import numpy as np
 import random
 import matplotlib.pyplot as plt
+from pytorch_lightning.callbacks import LearningRateMonitor
+from point_transformer_cls import PCT_PL
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 os.environ["WANDB_API_KEY"] = "04a5d6fba030b76e5b620f5bd6509cf7dffebb8b"
 
 def train(cfg, train_loader, test_loader):
 
     device = "cuda" if cfg.cuda else "cpu"
     if cfg.model.name == "Adapt_classf":
-        model = Adapt_classf_pl(cfg, cfg.model.embed_dim, cfg.n_points, cfg.n_classes, cfg.model.n_blocks, cfg.model.groups)
+        pass#model = Adapt_classf_pl(cfg, cfg.model.embed_dim, cfg.n_points, cfg.n_classes, cfg.model.n_blocks, cfg.model.groups)
+    elif cfg.model.name == "PCT_reproduce":
+        model = PCT_PL()
     else:
         raise Exception("Model not supported")
     
@@ -28,11 +32,12 @@ def train(cfg, train_loader, test_loader):
         wandb_logger.watch(model)
         wandb_logger.log_hyperparams(cfg)
         wandb_logger.log_hyperparams(model.hparams)
+        lr_monitor = LearningRateMonitor(logging_interval='step')
 
-    trainer = pl.Trainer(profiler="simple",max_epochs=cfg.train.epochs, accelerator=device, logger=[wandb_logger] if cfg.wandb else None, devices=1, gradient_clip_val=2)
+    trainer = pl.Trainer(max_epochs=cfg.train.epochs, accelerator=device, logger=[wandb_logger] if cfg.wandb else None, devices=1, gradient_clip_val=2, callbacks=[lr_monitor] if cfg.wandb else None)#, default_root_dir='saved_models')
     trainer.fit(model, train_loader, test_loader)
 
-    with torch.no_grad():
+    if False: #with torch.no_grad():
         data, label = next(iter(test_loader))
         decisions = []
         model = model.to(device)

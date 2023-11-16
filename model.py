@@ -113,6 +113,11 @@ class DropPredictor(nn.Module):
     https://github.com/raoyongming/DynamicViT/blob/48ac52643a637ed5a4cf7c7d429dcf17243794cd/models/dyvit.py#L287 """
     def __init__(self, embed_dim, budget_dim=32):
         super().__init__()
+
+        if False: 
+            self.transform_layer = TransformerBlock(embed_dim+budget_dim, n_heads=4)
+        
+
         self.in_conv = nn.Sequential(
             nn.LayerNorm(embed_dim+budget_dim),
             nn.Linear(embed_dim+budget_dim, embed_dim),
@@ -129,6 +134,8 @@ class DropPredictor(nn.Module):
         )
 
     def forward(self, x, policy):
+        if False:
+            x = self.transform_layer(x)
         x = self.in_conv(x)
         B, N, C = x.size()
         local_x = x[:,:, :C//2]
