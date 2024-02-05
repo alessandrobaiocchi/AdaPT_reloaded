@@ -6,17 +6,17 @@ eval: False
 visualize_pc: False
 
 experiment:
-  name: "PCT_reproduce"
+  name: "AdaPT_test"
   project: "Adapt_reloaded"
   seed: 42
   dataset: "ModelNet40"
 
 model:
-  name: "PCT_reproduce"
+  name: "Adapt_classf"
   embed_dim: 128
-  n_blocks: 8
-  drop_loc: [] #[1,3,5,7]
-  drop_rate: [] #[0.2,0.4,0.6,0.8]
+  n_blocks: 4
+  drop_loc: [0,1,2,3]
+  drop_rate: [0.2,0.4,0.6,0.8]
   groups: 4
   sampling_met: "gumbel"
   entmax_alpha: 
@@ -24,7 +24,7 @@ model:
 
 train:
   lr: 0.001
-  batch_size: 1
+  batch_size: 32
   epochs: 200
   weight_decay: 0.0001
   warmup_start: 20

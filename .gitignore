@@ -10,3 +10,7 @@ outputs/*
 lightning_logs/*
 datasets/__pycache__/*
 Adapt_reloaded/*
+debug.py
+debug.ipynb
+point_transformer_cls.py
+*.png

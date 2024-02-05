@@ -114,10 +114,6 @@ class DropPredictor(nn.Module):
     def __init__(self, embed_dim, budget_dim=32):
         super().__init__()
 
-        if False: 
-            self.transform_layer = TransformerBlock(embed_dim+budget_dim, n_heads=4)
-        
-
         self.in_conv = nn.Sequential(
             nn.LayerNorm(embed_dim+budget_dim),
             nn.Linear(embed_dim+budget_dim, embed_dim),
@@ -134,8 +130,6 @@ class DropPredictor(nn.Module):
         )
 
     def forward(self, x, policy):
-        if False:
-            x = self.transform_layer(x)
         x = self.in_conv(x)
         B, N, C = x.size()
         local_x = x[:,:, :C//2]
@@ -181,21 +175,24 @@ class AdaPT(nn.Module):
 
         #budget tokens to be appended to the tokens in the drop module
         #self.budget_tokens = [nn.Parameter(torch.randn(1, 1, 32)).to(self.device) for _ in range(4)]
-        self.zero_drop_budget = nn.Parameter(torch.zeros(1, 1, 32)).to(self.device)
-        self.full_drop_budget = nn.Parameter(torch.ones(1, 1, 32)).to(self.device)
+        #self.zero_drop_budget = nn.Parameter(torch.zeros(1, 1, 32)).to(self.device)
+        #self.full_drop_budget = nn.Parameter(torch.ones(1, 1, 32)).to(self.device)
 
         self.arpe = ARPE(in_channels=3, out_channels=self.embed_dim, npoints=self.n_points)
-        #self.blocks = nn.ModuleList([GSA(channels=self.embed_dim, groups=self.groups) for _ in range(self.n_blocks)])
         self.blocks = nn.ModuleList([TransformerBlock(d_model=self.embed_dim, n_heads=self.groups) for _ in range(self.n_blocks)])
         self.all_predictors = nn.ModuleList([nn.ModuleList([DropPredictor(self.embed_dim, budget_dim=0) for _ in range(len(self.drop_loc))]) for _ in range(self.n_budgets)])
         
 
-    def forward(self, x, drop_temp=1.0, budg = 0):
+    def forward(self, x, drop_temp=1.0, budg = 3):
 
         budg = torch.tensor(budg, device=self.device)
         drop_target = self.drop_target*(budg/(self.n_budgets-1))
         #budget_token = self.budget_tokens[budg]
-        budget_token = self.zero_drop_budget*(self.n_budgets-budg-1)/(self.n_budgets-1) + self.full_drop_budget*budg/(self.n_budgets-1)
+        #budget_token = self.zero_drop_budget*(self.n_budgets-budg-1)/(self.n_budgets-1) + self.full_drop_budget*budg/(self.n_budgets-1)
+        
+        #SOLO PER CONTO FLOPS
+        #budget_token = self.zero_drop_budget
+
         predictors = self.all_predictors[budg]
 
         B, N, C = x.shape
@@ -208,7 +205,7 @@ class AdaPT(nn.Module):
             if i in self.drop_loc:
                 
                 B, N, C = x.shape
-                x_for_pred = torch.cat((x, budget_token.repeat(B, N, 1)), dim=2)
+                #x_for_pred = torch.cat((x, budget_token.repeat(B, N, 1)), dim=2)
                 #pred_score = predictors[p](x_for_pred, prev_decision)
                 pred_score = predictors[p](x, prev_decision)
                 # Slow warmup
@@ -238,6 +235,7 @@ class AdaPT(nn.Module):
                     num_keep_tokens = int((1-drop_target[p]) * (N))
                     keep_policy = torch.argsort(score, dim=1, descending=True)[:, :num_keep_tokens]
                     x = batch_index_select(x, keep_policy)
+                    #print(drop_target[p],num_keep_tokens, x.shape)
                     prev_decision = batch_index_select(prev_decision, keep_policy)
                     mask = None
                     decisions = None
@@ -256,7 +254,7 @@ class Adapt_classf(nn.Module):
         self.classifier = Classf_head(embed_dim, n_classes)
         self.adapt = AdaPT(cfg, embed_dim, n_points, n_blocks, groups)
 
-    def forward(self, x, drop_temp=1.0, budg=0):
+    def forward(self, x, drop_temp=1.0, budg=3):
         x, decisions = self.adapt(x, drop_temp, budg)
         if decisions is not None and len(decisions) > 0:
             #print(decisions[-1])
@@ -282,7 +280,7 @@ class Adapt_classf_pl(pl.LightningModule):
         self.loss = nn.CrossEntropyLoss()
         self.n_budgets = cfg.train.n_budgets
 
-    def forward(self, x, drop_temp=1.0, budg=0):
+    def forward(self, x, drop_temp=1.0, budg=3):
         y, decisions = self.model(x, drop_temp, budg)
         if decisions is not None:
             return y, decisions
@@ -324,7 +322,7 @@ class Adapt_classf_pl(pl.LightningModule):
         scheduler = CosineAnnealingLR(optimizer, T_max=self.cfg.train.epochs, eta_min=0.0)
         return [optimizer], [scheduler]
 
-    def predict(self, x, drop_temp=1.0, budg=0):
+    def predict(self, x, drop_temp=1.0, budg=3):
         return self.model(x, drop_temp, budg)
 
 
