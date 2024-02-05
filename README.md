@@ -18,19 +18,17 @@ To get started with this project, follow these steps:
    cd AdaPT_reloaded
    ```
 
-3. Create a Conda environment from the provided `environment.yml` file:
+3. Create a Conda environment from the provided `Adapt_env.yaml` file:
 
    ```bash
-   conda env create -f environment.yml
+   conda env create -f Adapt_env.yaml
    ```
 
 4. Activate the Conda environment:
 
    ```bash
-   conda activate deep-learning-env
+   conda activate Adapt_env
    ```
-
-   Replace `deep-learning-env` with the name of your Conda environment if it's different.
 
 ## Usage
 
@@ -46,12 +44,10 @@ Once you have set up the Conda environment, you can run the code using the follo
 
    Replace `main.py` with the name of the main script in your project.
 
-3. Follow the prompts or adjust the configuration parameters as needed.
+## Hyperparameters
 
-## Additional Information
+This project uses Hydra for hyperparameter management. Edit the `config.yaml` file to change the desired parameters.
 
-- [Link to additional documentation or resources, if any]
-- [Any other relevant information about the project]
 
 ## Contributing
 
