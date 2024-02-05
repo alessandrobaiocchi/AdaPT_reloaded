@@ -13,4 +13,5 @@ Adapt_reloaded/*
 debug.py
 debug.ipynb
 point_transformer_cls.py
+sweepconfig.yaml
 *.png
